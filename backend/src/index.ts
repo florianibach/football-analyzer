@@ -1,17 +1,21 @@
-import express from 'express';
+import express, { Request } from 'express';
 import cors from 'cors';
-import fileUpload from 'express-fileupload';
+import fileUpload, { UploadedFile } from 'express-fileupload';
 import { parseTCX } from './tcxParser';
 
 const app = express();
 app.use(cors());
 app.use(fileUpload());
 
-app.post('/api/upload-tcx', async (req, res) => {
+interface CustomRequest extends Request {
+  files: fileUpload.FileArray;
+}
+
+app.post('/api/upload-tcx', async (req: CustomRequest, res) => {
     if (!req.files || !req.files.file) {
         return res.status(400).send('No file uploaded');
     }
-    const file = req.files.file as fileUpload.UploadedFile;
+    const file = req.files.file as UploadedFile;
     try {
         const analysis = await parseTCX(file.data.toString());
         res.json(analysis);
