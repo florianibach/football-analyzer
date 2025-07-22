@@ -1,27 +1,28 @@
-import express, { Request } from 'express';
+import express, { Response } from 'express';
 import cors from 'cors';
-import fileUpload, { UploadedFile } from 'express-fileupload';
-import { parseTCX } from './tcxParser';
+import fileUpload from 'express-fileupload';
 
 const app = express();
 app.use(cors());
 app.use(fileUpload());
 
-interface CustomRequest extends Request {
-  files: fileUpload.FileArray;
-}
+app.post('/api/upload-tcx', (req, res: Response) => {
+  (async () => {
+    if (!req.files || !req.files['file']) {
+      return res.status(400).send('No file uploaded');
+    }
 
-app.post('/api/upload-tcx', async (req: CustomRequest, res) => {
-    if (!req.files || !req.files.file) {
-        return res.status(400).send('No file uploaded');
-    }
-    const file = req.files.file as UploadedFile;
+    const fileData = req.files['file'];
+    const file = Array.isArray(fileData) ? fileData[0] : fileData;
+
     try {
-        const analysis = await parseTCX(file.data.toString());
-        res.json(analysis);
+      // Hier später TCX-Parsing aufrufen
+      res.json({ message: `File ${file.name} received` });
     } catch (err) {
-        res.status(500).send('Failed to parse TCX');
+      console.error(err);
+      res.status(500).send('Failed to parse TCX');
     }
+  })();
 });
 
 app.listen(3001, () => console.log('Backend running on http://localhost:3001'));
