@@ -1,6 +1,10 @@
+
 import { parseStringPromise } from 'xml2js';
 
-export const intervalsCache: { [zone: string]: any[] } = {};
+export const intervalsCache: {
+  overall: { [zone: string]: any[] },
+  bySplit: { [split: string]: { [zone: string]: any[] } }
+} = { overall: {}, bySplit: {} };
 
 const ZONES = [
   { name: 'Zone 1', min: 0,  max: 8  },
@@ -11,16 +15,20 @@ const ZONES = [
 ];
 
 export async function parseTCX(xml: string) {
-  Object.keys(intervalsCache).forEach(k => delete intervalsCache[k]);
+  intervalsCache.overall = {}; intervalsCache.bySplit = {};
 
   const tcx = await parseStringPromise(xml);
   const laps = tcx.TrainingCenterDatabase.Activities[0].Activity[0].Lap;
 
-  const overall = ZONES.map(z => ({ ...z, distance: 0, count: 0, active: false }));
+  const overall = ZONES.map(z => ({ ...z, distance: 0, count: 0 }));
+  const splits:any[] = [];
   let totalDist = 0, totalSec = 0;
 
   for (const lap of laps) {
     const tp = lap.Track[0].Trackpoint;
+    const splitName = lap.$.StartTime;
+    const splitAgg = ZONES.map(z => ({ ...z, distance: 0, count: 0 }));
+
     let prev: any = null, curr: any = null;
 
     for (const p of tp) {
@@ -37,24 +45,27 @@ export async function parseTCX(xml: string) {
           const kmh = dd / dt * 3.6;
           const zoneIdx = ZONES.findIndex(z => kmh >= z.min && kmh < z.max);
 
-          // Interval-Wechsel
+          // Intervall-Wechsel
           if (!curr || curr.zoneIdx !== zoneIdx) {
             if (curr) finishInterval(curr, prev.Time[0]);
             curr = {
               zoneIdx,
-              split: lap.$.StartTime,
+              zone: ZONES[zoneIdx].name,
+              split: splitName,
               startTs: p.Time[0],
               distance: 0,
               sec: 0,
               top: 0
             };
             overall[zoneIdx].count++;
+            splitAgg[zoneIdx].count++;
           }
           curr.distance += dd;
           curr.sec      += dt;
           curr.top       = Math.max(curr.top, kmh);
 
           overall[zoneIdx].distance += dd;
+          splitAgg[zoneIdx].distance += dd;
         }
       }
       prev = p;
@@ -63,19 +74,38 @@ export async function parseTCX(xml: string) {
 
     totalDist += parseFloat(lap.DistanceMeters[0]);
     totalSec  += parseFloat(lap.TotalTimeSeconds[0]);
+
+    splits.push({
+      name: splitName,
+      distance: Math.round(parseFloat(lap.DistanceMeters[0])),
+      time: toHms(parseFloat(lap.TotalTimeSeconds[0])),
+      zones: splitAgg.map(z => ({
+        name: z.name,
+        distance: Math.round(z.distance),
+        count: z.count
+      }))
+    });
   }
 
   return {
     totalDistance: Math.round(totalDist),
     totalTime:     toHms(totalSec),
-    zones: overall.map(o => ({ name: o.name, distance: Math.round(o.distance), count: o.count }))
+    zones: overall.map(o => ({ name: o.name, distance: Math.round(o.distance), count: o.count })),
+    splits
   };
 
   function finishInterval(intv: any, endTs: string) {
     intv.endTs   = endTs;
     intv.duration = toHms(intv.sec);
-    intervalsCache[ZONES[intv.zoneIdx].name] ??= [];
-    intervalsCache[ZONES[intv.zoneIdx].name].push(intv);
+
+    // overall
+    intervalsCache.overall[intv.zone] ??= [];
+    intervalsCache.overall[intv.zone].push(intv);
+
+    // bySplit
+    intervalsCache.bySplit[intv.split] ??= {};
+    intervalsCache.bySplit[intv.split][intv.zone] ??= [];
+    intervalsCache.bySplit[intv.split][intv.zone].push(intv);
   }
 }
 
