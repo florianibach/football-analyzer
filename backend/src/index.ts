@@ -7,21 +7,20 @@ const app = express();
 app.use(cors());
 app.use(fileUpload());
 
-app.post('/api/upload-tcx', async (req, res: Response) => {
-    if (!req.files || !req.files['file']) {
-        return res.status(400).send('No file uploaded');
-      }
+app.post('/api/upload-tcx', async (req: Request, res: Response) => {
+  if (!req.files || !req.files['file']) {
+    return res.status(400).send('No file uploaded');
+  }
+  const fileData = req.files['file'];
+  const uploadedFile = Array.isArray(fileData) ? fileData[0] : fileData;
 
-    const fileData = req.files['file'];
-    const uploadedFile = Array.isArray(fileData) ? fileData[0] : fileData;
-
-    try {
-        const analysis = await parseTCX(uploadedFile.data.toString());
-        res.json(analysis);
-    } catch (err) {
-        console.error(err);
-        res.status(500).send('Failed to parse TCX');
-    }
+  try {
+    const analysis = await parseTCX(uploadedFile.data.toString());
+    res.json(analysis);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Failed to parse TCX');
+  }
 });
 
 app.listen(3001, () => console.log('Backend running on http://localhost:3001'));
