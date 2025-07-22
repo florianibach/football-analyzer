@@ -18,7 +18,7 @@ export async function parseTCX(xml: string) {
     const laps = activities[0].Lap;
     let totalDistance = 0;
     let totalTimeSeconds = 0;
-    const overallZones = ZONES.map(zone => ({ ...zone, distance: 0, count: 0 }));
+    const overallZones = ZONES.map(zone => ({ ...zone, distance: 0, count: 0, totalSpeed: 0 }));
     const splits: any[] = [];
 
     for (const lap of laps) {
@@ -27,38 +27,56 @@ export async function parseTCX(xml: string) {
         totalDistance += lapDistance;
         totalTimeSeconds += lapTimeSeconds;
 
-        const lapZones = ZONES.map(zone => ({ ...zone, distance: 0, count: 0 }));
+        const lapZones = ZONES.map(zone => ({ ...zone, distance: 0, count: 0, totalSpeed: 0 }));
 
         const trackpoints = lap.Track[0].Trackpoint;
+        let prevTp: any = null;
+
         for (const tp of trackpoints) {
-            const speed = tp.Extensions?.[0]['ns3:TPX']?.[0]['ns3:Speed']?.[0];
-            if (speed) {
-                const speedKmh = parseFloat(speed) * 3.6;
-                for (const zone of lapZones) {
-                    if (speedKmh >= zone.min && speedKmh < zone.max) {
-                        zone.distance += parseFloat(tp.DistanceMeters?.[0] || '0');
-                        zone.count += 1;
-                        break;
+            if (prevTp) {
+                const prevTime = new Date(prevTp.Time[0]).getTime() / 1000;
+                const currTime = new Date(tp.Time[0]).getTime() / 1000;
+                const deltaTime = currTime - prevTime;
+
+                const prevDistance = parseFloat(prevTp.DistanceMeters?.[0] || '0');
+                const currDistance = parseFloat(tp.DistanceMeters?.[0] || '0');
+                const deltaDistance = currDistance - prevDistance;
+
+                if (deltaTime > 0 && deltaDistance > 0) {
+                    const speedMs = deltaDistance / deltaTime;
+                    const speedKmh = speedMs * 3.6;
+
+                    for (const zone of lapZones) {
+                        if (speedKmh >= zone.min && speedKmh < zone.max) {
+                            zone.distance += deltaDistance;
+                            zone.count += 1;
+                            zone.totalSpeed += speedKmh;
+                            break;
+                        }
                     }
-                }
-                for (const zone of overallZones) {
-                    if (speedKmh >= zone.min && speedKmh < zone.max) {
-                        zone.distance += parseFloat(tp.DistanceMeters?.[0] || '0');
-                        zone.count += 1;
-                        break;
+                    for (const zone of overallZones) {
+                        if (speedKmh >= zone.min && speedKmh < zone.max) {
+                            zone.distance += deltaDistance;
+                            zone.count += 1;
+                            zone.totalSpeed += speedKmh;
+                            break;
+                        }
                     }
                 }
             }
+            prevTp = tp;
         }
 
         splits.push({
             name: lap.$.StartTime || 'Lap',
-            distance: lapDistance,
+            distance: Math.round(lapDistance),
             time: secondsToHMS(lapTimeSeconds),
             zones: lapZones.map(z => ({
                 name: z.name,
                 distance: Math.round(z.distance),
-                count: z.count
+                count: z.count,
+                avgSpeedKmh: z.count > 0 ? +(z.totalSpeed / z.count).toFixed(2) : 0,
+                avgSpeedMs: z.count > 0 ? +(z.totalSpeed / z.count / 3.6).toFixed(2) : 0
             }))
         });
     }
@@ -69,7 +87,9 @@ export async function parseTCX(xml: string) {
         zones: overallZones.map(z => ({
             name: z.name,
             distance: Math.round(z.distance),
-            count: z.count
+            count: z.count,
+            avgSpeedKmh: z.count > 0 ? +(z.totalSpeed / z.count).toFixed(2) : 0,
+            avgSpeedMs: z.count > 0 ? +(z.totalSpeed / z.count / 3.6).toFixed(2) : 0
         })),
         splits
     };
