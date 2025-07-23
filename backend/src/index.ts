@@ -12,7 +12,7 @@ app.use(fileUpload());
 app.post('/api/upload-tcx', async (req: Request, res: Response) => {
   if (!req.files || !req.files['file']) return res.status(400).send('No file uploaded');
   const f = Array.isArray(req.files['file']) ? req.files['file'][0] : req.files['file'];
-  const smoothed = await smoothTCX(f.data.toString(), 3); // glätten
+  const smoothed = await smoothTCX(f.data.toString(), 5, 2); // glätten
   const analysis = await parseTCX(smoothed);
   res.json(analysis);
 });

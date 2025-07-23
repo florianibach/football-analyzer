@@ -1,4 +1,5 @@
 import { parseStringPromise, Builder } from 'xml2js';
+import { savgol } from './SavitzkyGolayFilter';
 
 export const intervalsCache: {
   overall: { [zone: string]: any[] },
@@ -13,19 +14,15 @@ const ZONES = [
   { name: 'Zone 5 (Sprint)', min: 20, max: Infinity }
 ];
 
-//
-// 🟣 Neue Funktion: TCX-Datei glätten
-//
-export async function smoothTCX(xml: string, window = 3): Promise<string> {
+// 🟣 TCX-Datei glätten mit Savitzky-Golay
+export async function smoothTCX(xml: string, window = 5, poly = 2): Promise<string> {
   const data = await parseStringPromise(xml);
-
   const laps = data.TrainingCenterDatabase.Activities[0].Activity[0].Lap;
 
   for (const lap of laps) {
     const tp = lap.Track[0].Trackpoint;
 
-    // Berechne rohe Geschwindigkeit in m/s
-    const speeds: number[] = tp.map((p : any, idx: any) => {
+    const speeds: number[] = tp.map((p: any, idx: any) => {
       if (idx === 0) return 0;
       const t0 = new Date(tp[idx-1].Time[0]).getTime() / 1000;
       const t1 = new Date(p.Time[0]).getTime() / 1000;
@@ -35,20 +32,18 @@ export async function smoothTCX(xml: string, window = 3): Promise<string> {
       const d1 = parseFloat(p.DistanceMeters?.[0] || '0');
       const dd = d1 - d0;
 
-      return dt > 0 ? dd / dt : 0; // m/s
+      return dt > 0 ? dd / dt * 3.6 : 0; // km/h
     });
 
-    // Medianfilter anwenden
-    const smoothedSpeeds = medianFilter(speeds, window);
+    const smoothed = savgol(speeds, window, poly);
 
-    // Glättung in die Distanz schreiben
     for (let i = 1; i < tp.length; i++) {
       const tPrev = new Date(tp[i-1].Time[0]).getTime() / 1000;
       const tCurr = new Date(tp[i].Time[0]).getTime() / 1000;
       const dt = tCurr - tPrev;
 
       const prevDist = parseFloat(tp[i-1].DistanceMeters?.[0] || '0');
-      tp[i].DistanceMeters[0] = (prevDist + smoothedSpeeds[i] * dt).toFixed(3);
+      tp[i].DistanceMeters[0] = (prevDist + (smoothed[i] / 3.6) * dt).toFixed(3);
     }
   }
 
@@ -56,22 +51,7 @@ export async function smoothTCX(xml: string, window = 3): Promise<string> {
   return builder.buildObject(data);
 }
 
-function medianFilter(values: number[], window = 3): number[] {
-  const result: number[] = [];
-  const half = Math.floor(window / 2);
-
-  for (let i = 0; i < values.length; i++) {
-    const start = Math.max(0, i - half);
-    const end = Math.min(values.length, i + half + 1);
-    const windowSlice = values.slice(start, end).sort((a, b) => a - b);
-    result.push(windowSlice[Math.floor(windowSlice.length / 2)]);
-  }
-  return result;
-}
-
-//
-// 🟠 Analyse (unverändert)
-//
+// 🟠 Analyse inkl. Polar-Style Top-Speed
 export async function parseTCX(xml: string) {
   intervalsCache.overall = {}; intervalsCache.bySplit = {};
 
@@ -88,6 +68,8 @@ export async function parseTCX(xml: string) {
     const splitAgg = ZONES.map(z => ({ ...z, distance: 0, count: 0 }));
 
     let prev: any = null, curr: any = null;
+    let intervalSpeeds: number[] = [];
+    let movingAvgQueue: number[] = [];
 
     for (const p of tp) {
       if (prev) {
@@ -103,9 +85,14 @@ export async function parseTCX(xml: string) {
           const kmh = dd / dt * 3.6;
           const zoneIdx = ZONES.findIndex(z => kmh >= z.min && kmh < z.max);
 
+          // Moving average queue (Polar-style)
+          movingAvgQueue.push(kmh);
+          if (movingAvgQueue.length > 3) movingAvgQueue.shift();
+          const avgKmh = movingAvgQueue.reduce((a, b) => a + b, 0) / movingAvgQueue.length;
+
           // Intervall-Wechsel
           if (!curr || curr.zoneIdx !== zoneIdx) {
-            if (curr) finishInterval(curr, prev.Time[0]);
+            if (curr) finishInterval(curr, intervalSpeeds, prev.Time[0]);
             curr = {
               zoneIdx,
               zone: ZONES[zoneIdx].name,
@@ -113,14 +100,19 @@ export async function parseTCX(xml: string) {
               startTs: p.Time[0],
               distance: 0,
               sec: 0,
-              top: 0
+              top_absolute: 0,
+              top_polar: 0,
+              polar_queue: []
             };
+            intervalSpeeds = [];
             overall[zoneIdx].count++;
             splitAgg[zoneIdx].count++;
           }
           curr.distance += dd;
           curr.sec      += dt;
-          curr.top       = Math.max(curr.top, kmh);
+          intervalSpeeds.push(kmh);
+          curr.top_absolute = Math.max(curr.top_absolute, kmh);
+          curr.polar_queue.push(avgKmh);
 
           overall[zoneIdx].distance += dd;
           splitAgg[zoneIdx].distance += dd;
@@ -128,7 +120,7 @@ export async function parseTCX(xml: string) {
       }
       prev = p;
     }
-    if (curr) finishInterval(curr, prev.Time[0]);
+    if (curr) finishInterval(curr, intervalSpeeds, prev.Time[0]);
 
     totalDist += parseFloat(lap.DistanceMeters[0]);
     totalSec  += parseFloat(lap.TotalTimeSeconds[0]);
@@ -152,15 +144,15 @@ export async function parseTCX(xml: string) {
     splits
   };
 
-  function finishInterval(intv: any, endTs: string) {
+  function finishInterval(intv: any, speeds: number[], endTs: string) {
     intv.endTs   = endTs;
     intv.duration = toHms(intv.sec);
 
-    // overall
+    intv.top_polar = Math.max(...intv.polar_queue);
+
     intervalsCache.overall[intv.zone] ??= [];
     intervalsCache.overall[intv.zone].push(intv);
 
-    // bySplit
     intervalsCache.bySplit[intv.split] ??= {};
     intervalsCache.bySplit[intv.split][intv.zone] ??= [];
     intervalsCache.bySplit[intv.split][intv.zone].push(intv);
