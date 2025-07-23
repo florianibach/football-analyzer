@@ -2,7 +2,7 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import fileUpload from 'express-fileupload';
-import { parseTCX, intervalsCache } from './tcxParser';
+import { parseTCX, intervalsCache, smoothTCX } from './tcxParser';
 
 const app = express();
 app.use(cors());
@@ -12,8 +12,9 @@ app.use(fileUpload());
 app.post('/api/upload-tcx', async (req: Request, res: Response) => {
   if (!req.files || !req.files['file']) return res.status(400).send('No file uploaded');
   const f = Array.isArray(req.files['file']) ? req.files['file'][0] : req.files['file'];
-  const overview = await parseTCX(f.data.toString());
-  res.json(overview);
+  const smoothed = await smoothTCX(f.data.toString(), 3); // glätten
+  const analysis = await parseTCX(smoothed);
+  res.json(analysis);
 });
 
 // Detail-API pro Zone und Split

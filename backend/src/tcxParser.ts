@@ -1,5 +1,4 @@
-
-import { parseStringPromise } from 'xml2js';
+import { parseStringPromise, Builder } from 'xml2js';
 
 export const intervalsCache: {
   overall: { [zone: string]: any[] },
@@ -14,6 +13,65 @@ const ZONES = [
   { name: 'Zone 5 (Sprint)', min: 20, max: Infinity }
 ];
 
+//
+// 🟣 Neue Funktion: TCX-Datei glätten
+//
+export async function smoothTCX(xml: string, window = 3): Promise<string> {
+  const data = await parseStringPromise(xml);
+
+  const laps = data.TrainingCenterDatabase.Activities[0].Activity[0].Lap;
+
+  for (const lap of laps) {
+    const tp = lap.Track[0].Trackpoint;
+
+    // Berechne rohe Geschwindigkeit in m/s
+    const speeds: number[] = tp.map((p : any, idx: any) => {
+      if (idx === 0) return 0;
+      const t0 = new Date(tp[idx-1].Time[0]).getTime() / 1000;
+      const t1 = new Date(p.Time[0]).getTime() / 1000;
+      const dt = t1 - t0;
+
+      const d0 = parseFloat(tp[idx-1].DistanceMeters?.[0] || '0');
+      const d1 = parseFloat(p.DistanceMeters?.[0] || '0');
+      const dd = d1 - d0;
+
+      return dt > 0 ? dd / dt : 0; // m/s
+    });
+
+    // Medianfilter anwenden
+    const smoothedSpeeds = medianFilter(speeds, window);
+
+    // Glättung in die Distanz schreiben
+    for (let i = 1; i < tp.length; i++) {
+      const tPrev = new Date(tp[i-1].Time[0]).getTime() / 1000;
+      const tCurr = new Date(tp[i].Time[0]).getTime() / 1000;
+      const dt = tCurr - tPrev;
+
+      const prevDist = parseFloat(tp[i-1].DistanceMeters?.[0] || '0');
+      tp[i].DistanceMeters[0] = (prevDist + smoothedSpeeds[i] * dt).toFixed(3);
+    }
+  }
+
+  const builder = new Builder();
+  return builder.buildObject(data);
+}
+
+function medianFilter(values: number[], window = 3): number[] {
+  const result: number[] = [];
+  const half = Math.floor(window / 2);
+
+  for (let i = 0; i < values.length; i++) {
+    const start = Math.max(0, i - half);
+    const end = Math.min(values.length, i + half + 1);
+    const windowSlice = values.slice(start, end).sort((a, b) => a - b);
+    result.push(windowSlice[Math.floor(windowSlice.length / 2)]);
+  }
+  return result;
+}
+
+//
+// 🟠 Analyse (unverändert)
+//
 export async function parseTCX(xml: string) {
   intervalsCache.overall = {}; intervalsCache.bySplit = {};
 
